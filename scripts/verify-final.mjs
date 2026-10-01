@@ -1,0 +1,38 @@
+import {createRequire} from 'node:module';
+import {mkdir,cp,writeFile} from 'node:fs/promises';
+import {spawn} from 'node:child_process';
+const require=createRequire(import.meta.url);
+const {chromium,expect}=require(process.env.PLAYWRIGHT_MODULE||'@playwright/test');
+await mkdir('verification/pages-root/camara-de-gravidade',{recursive:true});
+await cp('dist','verification/pages-root/camara-de-gravidade',{recursive:true});
+const server=spawn('python3',['-m','http.server','4174','--bind','127.0.0.1','--directory','verification/pages-root'],{stdio:'ignore'});
+const browser=await chromium.connectOverCDP('http://127.0.0.1:18800');
+const context=await browser.newContext({viewport:{width:390,height:844}}),page=await context.newPage();
+page.setDefaultTimeout(10000);
+const results=[];
+try{
+  await expect.poll(async()=>{try{return (await fetch('http://127.0.0.1:4174')).status;}catch{return 0;}}).toBe(200);
+  await page.goto('http://127.0.0.1:4174/camara-de-gravidade/');
+  await expect(page.getByRole('heading',{name:'Um passo além.'})).toBeVisible();
+  await page.evaluate(()=>navigator.serviceWorker.ready);await page.reload();
+  await page.getByRole('button',{name:'Começar treino'}).click();
+  await page.getByRole('spinbutton',{name:'Repetições da série 1',exact:true}).fill('10');
+  await page.getByRole('button',{name:'Concluir série 1',exact:true}).click();
+  await page.getByRole('spinbutton',{name:'Repetições da série 1',exact:true}).fill('0');
+  await page.getByRole('spinbutton',{name:'Repetições da série 1',exact:true}).blur();
+  await expect(page.getByRole('button',{name:'Concluir série 1',exact:true})).toHaveAttribute('aria-pressed','false');
+  results.push('Editing completed series to zero repetitions unmarks completion');
+  await page.getByRole('spinbutton',{name:'Repetições da série 1',exact:true}).fill('101');
+  await page.getByRole('spinbutton',{name:'Repetições da série 1',exact:true}).blur();
+  const row=await page.evaluate(()=>JSON.parse(localStorage.getItem('camara-gravidade-v1')).active.sets.legpress[0]);
+  expect(row.reps).toBe(0);expect(row.done).toBe(false);
+  results.push('Out-of-range editing cannot retain a stale completed set');
+  await page.getByRole('button',{name:'Salvar e sair',exact:true}).click();
+  await context.setOffline(true);await page.reload();
+  await expect(page.getByRole('button',{name:/^Retomar treino/})).toBeVisible();
+  const style=await page.locator('.hero').evaluate(el=>getComputedStyle(el).borderRadius);
+  expect(style).toBe('21px');
+  results.push('Built app, assets, local persistence and offline CSS work under a Pages-like subpath');
+  await writeFile('verification/final-results.json',JSON.stringify({date:new Date().toISOString(),results},null,2));
+  console.log(JSON.stringify({passed:results.length,results},null,2));
+}finally{await context.close();await browser.close();server.kill();}
